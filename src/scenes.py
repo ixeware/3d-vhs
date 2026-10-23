@@ -1,14 +1,19 @@
 """The two shots: Alonso's stare, and Red Bull celebrating on the RB8."""
 import numpy as np
-from engine import T, Ry, Camera, merge, grid
+from engine import T, Ry, Camera, merge
 from models import Look, character, rb8, theatre_lamp
-from shade import Spot
+from sets import town, street_lamp, otherworld
+from shade import Spot, Env
 import timeline as TL
 
 W, H = 320, 240
 
 FERRARI_RED = (0.62, 0.03, 0.03)
 RB_NAVY = (0.07, 0.09, 0.24)
+
+FOG_WORLD = Env(fog=(0.30, 0.31, 0.33), fog_dist=11.0, ambient=(0.52, 0.53, 0.57))
+RUST_WORLD = Env(fog=(0.20, 0.07, 0.045), fog_dist=8.0, ambient=(0.20, 0.09, 0.06), tint=(1.0, 0.62, 0.5))
+BLACK = Env(fog=(0, 0, 0), fog_dist=8.0, ambient=(0, 0, 0), tint=(1.0, 0.62, 0.5))
 
 
 def ease(x):
@@ -34,6 +39,14 @@ def lamp_level(t, t_on, t_off=None, seed=0):
     return 1.0 - 0.025 * rng.random()
 
 
+def street_flicker(t):
+    """Dying sodium lamp: mostly on, with stutters."""
+    rng = np.random.default_rng(int(t * 15) + 77)
+    if (t % 3.7) < 0.35:
+        return 0.15 if rng.random() < 0.6 else 1.0
+    return 0.9 + 0.1 * rng.random()
+
+
 def afterglow(t, t_off):
     if t < t_off:
         return 0.0
@@ -43,7 +56,6 @@ def afterglow(t, t_off):
 class Stage:
     def __init__(self, tex_ix):
         self.tx = tex_ix
-        self.floor = grid(16, 32, (0.42, 0.42, 0.44), tex=tex_ix['concrete'])
         self.alonso = Look('alonso', 'suit_ferrari', FERRARI_RED, FERRARI_RED, (0.80, 0.60, 0.47),
                            (0.09, 0.06, 0.05), (0.08, 0.08, 0.09),
                            hair_kw=dict(spiky=0.03, front=0.064, back=-0.075))
@@ -62,7 +74,6 @@ class Stage:
 
     # ------------------------------------------------------------ shot 1
     def shot_alonso(self, t):
-        tl = t - TL.LAMP1_ON
         lvl = lamp_level(t, TL.LAMP1_ON, seed=1)
         pivot = (0.25, 4.1, 2.3)
         aim_at = np.array([0.0, 1.05, 0.0])
@@ -70,9 +81,9 @@ class Stage:
         spot = Spot(lens, aim_at, 9, 15, 7.0 * lvl)
 
         # stare: body three-quarter, head comes round to the lens
-        turn = ease((t - 5.4) / 2.2)
+        turn = ease((t - TL.VOICE1 - 3.2) / 2.2)
         breath = np.sin(t * 2 * np.pi / 4.2)
-        blink = any(abs(t - b) < 0.06 for b in (4.1, 9.6))
+        blink = any(abs(t - b) < 0.06 for b in (6.1, 11.6))
         pose = dict(
             pelvis=(0, 0.0, 0.0), spine=(0.03 + 0.01 * breath, 0.05, 0.0),
             neck=(0.05, -0.15 - 0.15 * turn, 0.0),
@@ -83,19 +94,37 @@ class Stage:
         root = T(0, 0, 0) @ Ry(0.62)
         alonso = character(self.alonso, self.tx, root, pose, blink=blink)
 
-        # camera: wide reveal with the lamp in frame, slow push to a close-up
-        k = ease((t - 1.6) / 7.6)
-        eye = lerp((0.9, 1.25, 6.4), (0.40, 1.66, 1.18), k)
-        tgt = lerp((0.0, 2.6, 0.0), (0.02, 1.52, 0.0), k)
-        eye = eye + 0.01 * np.array([np.sin(t * 0.7), np.sin(t * 0.9 + 1), 0])
-        fov = float(lerp(56, 34, k))
-        cam = Camera(eye, tgt, fov, W, H, roll=0.02 * np.sin(t * 0.4))
+        if t < TL.LAMP1_ON:
+            # establishing: standing on the corner of Lindsey St, panning off Neely's sign
+            # down the street to the figure waiting in the fog
+            k = ease((t - TL.ESTABLISH) / (TL.LAMP1_ON - TL.ESTABLISH - 0.15))
+            eye = lerp((-3.0, 1.5, 1.9), (-2.5, 1.6, 4.3), k)
+            tgt = lerp((-5.9, 3.5, -3.75), (1.0, 1.3, -4.5), k)
+            cam = Camera(eye, tgt, 50, W, H, roll=0.03 * np.sin(t * 0.8))
+        else:
+            # wide reveal with the lamp in frame, slow push to a close-up
+            k = ease((t - TL.LAMP1_ON - 0.75) / 7.6)
+            eye = lerp((0.9, 1.25, 6.4), (0.40, 1.66, 1.18), k)
+            tgt = lerp((0.0, 2.6, 0.0), (0.02, 1.52, 0.0), k)
+            eye = eye + 0.01 * np.array([np.sin(t * 0.7), np.sin(t * 0.9 + 1), 0])
+            fov = float(lerp(56, 34, k))
+            cam = Camera(eye, tgt, fov, W, H, roll=0.02 * np.sin(t * 0.4))
 
-        glow = 0.0
-        scene = merge([alonso, self.floor, lamp])
-        occ = merge([alonso, self.floor])
+        parts = [alonso, town(self.tx, t), street_lamp((4.75, -5.3), street_flicker(t), side=-1)]
+        # the one who won it, watching from the fog
+        flick = np.random.default_rng(int(t * 30) + 5).random()
+        edge = min(t - TL.APP_IN, TL.APP_OUT - t)
+        if TL.APP_IN <= t < TL.APP_OUT and (edge > 0.4 or flick < 0.55):
+            ghost = dict(shoulderR=(-2.95, 0, 0.05), elbowR=(-0.1, 0, 0), handR='point',
+                         head=(0.05, 0.0, 0.0), shoulderL=(0, 0, 0.08))
+            parts.append(character(self.vettel, self.tx, T(-2.4, 0, -3.7) @ Ry(0.5), ghost))
+
+        k_other = ease((t - TL.OTHER_START) / (TL.CUT - TL.OTHER_START))
+        env = Env.lerp(FOG_WORLD, RUST_WORLD, k_other)
+        scene = merge(parts + [lamp])
+        occ = merge(parts)
         dust_box = ((-1.5, 1.5), (0.0, 5.0), (-1.5, 2.5))
-        return scene, occ, cam, spot, glow, dust_box
+        return dict(scene=scene, occ=occ, cam=cam, spot=spot, env=env, dust=dust_box, ember=False)
 
     # ------------------------------------------------------------ shot 2
     def shot_redbull(self, t):
@@ -106,7 +135,11 @@ class Stage:
         lamp, lens = theatre_lamp(pivot, aim_at - pivot, on=max(lvl, glow * 0.25))
         spot = Spot(lens, aim_at, 18, 26, 12.0 * lvl)
 
-        parts = [self.floor, lamp, self.car]
+        dead = t >= TL.CLICK
+        fan = 1.0 if not dead else glow
+        world = otherworld(self.tx, t)
+        world.emis = world.emis * fan
+        parts = [world, lamp, self.car]
         # Vettel on top of the car, finger up
         bounce = abs(np.sin(t * 5.2)) * 0.03
         vpose = dict(
@@ -152,4 +185,7 @@ class Stage:
         scene = merge(parts)
         occ = merge([p for p in parts if p is not lamp])
         dust_box = ((-2.5, 2.5), (0.0, 6.0), (-2.0, 3.5))
-        return scene, occ, cam, spot, glow, dust_box
+        # when the lamp dies, the whole Otherworld dies with it
+        env = BLACK if dead else RUST_WORLD
+        return dict(scene=scene, occ=occ, cam=cam, spot=spot, env=env, dust=dust_box,
+                    ember=not dead)

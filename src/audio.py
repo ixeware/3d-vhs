@@ -104,6 +104,44 @@ def lamp_hum(n, rng):
     return y * 0.05
 
 
+def siren(dur, rng):
+    """Mechanical air-raid siren: spins up, wails, winds down (the Silent Hill one)."""
+    n = int(dur * SR); t = np.arange(n) / SR
+    up = 1 - np.exp(-t / 0.9)
+    down = np.clip((t - 5.1) / 2.6, 0, 1)
+    spin = up * (1 - down ** 1.5)
+    f = 70 + 360 * spin + 6 * np.sin(2 * np.pi * 0.4 * t)
+    ph = 2 * np.pi * np.cumsum(f) / SR
+    tone = sum(np.sin(k * ph) / k ** 0.9 for k in range(1, 11))
+    tone += 0.7 * sum(np.sin(k * ph * 1.2) / k for k in range(1, 9))   # second rotor
+    y = band(tone * spin ** 1.3, 90, 2600)
+    return reverb(y / np.abs(y).max(), 3.0, 0.5, 13, 2200)
+
+
+def radio_static(dur, rng):
+    """Harry's pocket radio: gritty, chopped static that swells as something gets near."""
+    n = int(dur * SR)
+    noise = band(rng.standard_normal(n), 400, 5000)
+    gate = (rng.random(n // 441 + 1) ** 0.5).repeat(441)[:n]
+    crackle = (rng.random(n) > 0.9993) * rng.standard_normal(n) * 3
+    y = (noise * gate + crackle) * np.linspace(0.25, 1.0, n) ** 1.5
+    return np.tanh(2 * y)
+
+
+def clang(rng):
+    """Distant metal struck somewhere in the Otherworld."""
+    n = int(2.0 * SR); t = np.arange(n) / SR
+    y = sum(np.sin(2 * np.pi * f * t) * np.exp(-t / d) * a
+            for f, d, a in ((173, 0.9, 1.0), (467, 0.6, 0.6), (911, 0.4, 0.45), (1437, 0.25, 0.3)))
+    y += band(rng.standard_normal(n), 800, 6000) * np.exp(-t / 0.01) * 0.6
+    return reverb(band(y, 100, 3000), 2.6, 0.6, int(rng.integers(100)), 2000)
+
+
+def relay_tick(rng):
+    n = int(0.05 * SR); t = np.arange(n) / SR
+    return band(rng.standard_normal(n), 1500, 7000) * np.exp(-t / 0.003)
+
+
 def tape_snow(n, rng):
     return band(rng.standard_normal(n), 400, 9000) * 0.35
 
@@ -129,7 +167,7 @@ def build(out):
              + 0.35 * np.sin(2 * np.pi * 82.4 * t + np.sin(t * 0.3) * 2))
     drone += band(rng.standard_normal(N), 60, 400) * 0.8
     drone *= 0.5 + 0.5 * np.sin(2 * np.pi * 0.07 * t) ** 2
-    live = ((t > TL.LAMP1_ON) & (t < TL.CLICK)).astype(float)
+    live = ((t > TL.ESTABLISH) & (t < TL.CLICK)).astype(float)
     live = np.convolve(live, np.ones(4410) / 4410, 'same')
     mix += drone * live * 0.045
 
@@ -150,6 +188,28 @@ def build(out):
     gate = ((t > TL.LAMP2_ON + 0.2) & (t < TL.CLICK)).astype(float)
     gate = np.convolve(gate, np.ones(22050) / 22050, 'same')
     mix += band(crowd, 0, 900) * gate * 0.05
+
+    # fog world: wind down the empty street, the traffic light relay ticking
+    wind = band(rng.standard_normal(N), 80, 700) * (0.6 + 0.4 * np.sin(2 * np.pi * 0.11 * t + np.sin(t * 0.37) * 2))
+    fog = ((t > TL.ESTABLISH) & (t < TL.OTHER_START)).astype(float)
+    mix += wind * np.convolve(fog, np.ones(22050) / 22050, 'same') * 0.06
+    for k in np.arange(np.ceil(TL.ESTABLISH / 1.1), TL.CUT / 1.1):
+        place(mix, relay_tick(rng), k * 1.1, 0.05)
+
+    # the figure in the fog: radio static, killed with the tape glitch
+    place(mix, radio_static(TL.APP_OUT - TL.APP_IN, rng), TL.APP_IN, 0.13)
+    for te in (TL.APP_IN, TL.APP_OUT, TL.LAMP1_ON):
+        place(mix, tape_snow(int(0.1 * SR), rng) * np.hanning(int(0.1 * SR)), te - 0.05, 0.3)
+
+    # the siren, ducked under the second line
+    sir = siren(8.0, rng)
+    i0 = int(TL.SIREN * SR)
+    duck = 1 - 0.8 * np.clip((t[i0:i0 + len(sir)] - TL.VOICE2 + 0.4) / 0.6, 0, 1)
+    place(mix, sir * duck, TL.SIREN, 0.2)
+
+    # Otherworld: metal struck somewhere far off
+    for tc in (TL.LAMP2_ON + 1.4, TL.LAMP2_ON + 4.6, TL.LAMP2_ON + 6.1, TL.LAMP2_ON + 8.2):
+        place(mix, clang(rng), tc, 0.09)
 
     # voices
     v1 = vhs_voice(load('assets/line1.mp3'), 1)

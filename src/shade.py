@@ -21,8 +21,8 @@ class Spot:
         self.cam = Camera(self.pos, self.pos + self.dir, outer_deg * 2 + 4, shadow_res, shadow_res, up=up)
         self.depth = None
 
-    def build_shadow(self, mesh):
-        vis = rasterize(mesh, self.cam, near=0.1, snap=False, cull=False)
+    def build_shadow(self, mesh, textures=None):
+        vis = rasterize(mesh, self.cam, near=0.1, snap=False, cull=False, textures=textures)
         self.depth = np.where(vis[0] >= 0, 1.0 / np.maximum(vis[3], 1e-9), 1e9)
 
     def shadow(self, Q, bias=0.06):
@@ -42,12 +42,43 @@ class Spot:
         return self.I * cone / (1 + (d / 4.0) ** 2), Ld
 
 
-def shade(G, cam, spot, ambient=0.0025, bounce=0.3):
+class Env:
+    """Fog-world atmosphere. Colours are given in sRGB."""
+
+    def __init__(self, fog, fog_dist, ambient, fog_pow=1.4, tint=(1, 1, 1)):
+        self.fog = np.asarray(fog, float) ** 2.2
+        self.fog_dist = fog_dist
+        self.fog_pow = fog_pow
+        self.amb = np.asarray(ambient, float) ** 2.2
+        self.tint = np.asarray(tint, float)
+
+    @staticmethod
+    def lerp(a, b, k):
+        e = Env((0, 0, 0), 1, (0, 0, 0))
+        e.fog = a.fog * (1 - k) + b.fog * k
+        e.fog_dist = a.fog_dist * (1 - k) + b.fog_dist * k
+        e.fog_pow = a.fog_pow * (1 - k) + b.fog_pow * k
+        e.amb = a.amb * (1 - k) + b.amb * k
+        e.tint = a.tint * (1 - k) + b.tint * k
+        return e
+
+    def fog_factor(self, d):
+        return np.exp(-(d / self.fog_dist) ** self.fog_pow)
+
+
+DARK = Env((0, 0, 0), 1e6, (0.05, 0.055, 0.07))
+
+
+def shade(G, cam, spot, env=DARK, bounce=0.3):
     H, W = cam.H, cam.W
-    out = np.zeros((H, W, 3))
     v = G['valid']
+    # background: the fog itself, a touch darker overhead
+    ray = cam.rays()
+    ray /= np.linalg.norm(ray, axis=-1, keepdims=True)
+    # below the horizon there is only the abyss
+    out = env.fog * (1.0 - 0.35 * np.clip(ray[..., 1:2], 0, 1) - 0.75 * np.clip(-ray[..., 1:2] * 4, 0, 1))
     pos, nrm = G['pos'], G['nrm']
-    alb = np.clip(G['alb'], 0, 1) ** 2.2
+    alb = (np.clip(G['alb'], 0, 1) * env.tint) ** 2.2
     rad, Ld = spot.radiance(pos)
     sh = spot.shadow(pos)
     ndl = np.clip((np.einsum('ij,ij->i', nrm, Ld) + 0.25) / 1.25, 0, 1)
@@ -60,9 +91,11 @@ def shade(G, cam, spot, ambient=0.0025, bounce=0.3):
     dxz = (pos[:, 0] - pool[0]) ** 2 + (pos[:, 2] - pool[2]) ** 2
     up = np.clip(0.55 - 0.45 * nrm[:, 1], 0, 1) * np.exp(-dxz / 3.0) * np.exp(-np.maximum(pos[:, 1] - 0.5, 0) / 2.5)
     fill = (bounce * spot.I / 10.0 * up)[:, None] * spot.color * np.array([1.0, 0.85, 0.75])
-    col = alb * (ambient * np.array([0.6, 0.7, 1.0]) + light + fill) + sp[:, None] * spot.color
+    sky = env.amb * (0.55 + 0.45 * nrm[:, 1:2])
+    col = alb * (sky + light + fill) + sp[:, None] * spot.color
     col += alb * G['emis'][:, None]
-    out[v] = col
+    f = env.fog_factor(np.linalg.norm(pos - cam.eye, axis=1))[:, None]
+    out[v] = col * f + out[v] * (1 - f)
     return out
 
 
@@ -110,6 +143,41 @@ def dust(img, cam, spot, depth, t, n=500, seed=7, box=((-3, 3), (0, 5), (-3, 3))
     vis = z[ok] < depth[iy, ix]
     b = r[ok][vis] * 0.012 * rng.uniform(0.3, 1.0, ok.sum())[vis]
     np.add.at(img, (iy[vis], ix[vis]), b[:, None] * spot.color)
+
+
+def ash(img, cam, spot, env, depth, t, n=900, seed=11, ember=False):
+    """Silent Hill ash (or Otherworld embers) drifting around the camera."""
+    rng = np.random.default_rng(seed)
+    size = np.array([14.0, 9.0, 14.0])
+    centre = cam.eye + cam.f * 6.0
+    p0 = rng.random((n, 3)) * size
+    ph = rng.uniform(0, 6.28, n)
+    speed = rng.uniform(0.25, 0.5, n)
+    drift = np.stack([0.35 * np.sin(t * 0.7 + ph) + 0.15 * t, (speed if ember else -speed) * t,
+                      0.25 * np.sin(t * 0.5 + ph * 1.7)], 1)
+    P = centre - size / 2 + (p0 + drift - (centre - size / 2)) % size
+    sx, sy, z = cam.project(P)
+    ok = (z > 0.3) & (sx >= 0) & (sx < cam.W - 3) & (sy >= 0) & (sy < cam.H - 3)
+    P, sx, sy, z = P[ok], sx[ok], sy[ok], z[ok]
+    ix, iy = sx.astype(int), sy.astype(int)
+    vis = z < depth[iy, ix]
+    P, ix, iy, z = P[vis], ix[vis], iy[vis], z[vis]
+    if ember:
+        flick = 0.5 + 0.5 * np.sin(t * 9 + np.arange(len(P)))
+        col = np.array([1.6, 0.55, 0.15])[None] * (0.4 + 0.6 * flick[:, None])
+    else:
+        r, _ = spot.radiance(P)
+        col = 0.55 * (env.amb[None] * 1.6 + 0.6 * r[:, None] * spot.color)
+    f = env.fog_factor(z)[:, None]
+    col = col * f + env.fog * (1 - f)
+    px = np.clip(0.035 * cam.fpx / z, 1, 3).astype(int)
+    for s_ in (1, 2, 3):
+        sel = px == s_
+        for dy in range(s_):
+            for dx in range(s_):
+                if (dx, dy) in ((s_ - 1, s_ - 1),) and s_ > 1:
+                    continue        # chipped corner: reads as a flake, not a square
+                img[iy[sel] + dy, ix[sel] + dx] = img[iy[sel] + dy, ix[sel] + dx] * 0.15 + col[sel] * 0.85
 
 
 def bloom(img, thresh=0.8, radius=4, strength=0.35):

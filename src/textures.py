@@ -192,6 +192,212 @@ def redbull_logo(w=64, h=32):
     return c.done()
 
 
+# ---------------------------------------------------------------- locations
+def _noise(rng, h, w, octaves=((8, 0.5), (16, 0.3), (64, 0.2))):
+    out = np.zeros((h, w))
+    for cells, amp in octaves:
+        n = rng.random((cells, cells))
+        out += amp * np.kron(n, np.ones((h // cells + 1, w // cells + 1)))[:h, :w]
+    return out
+
+
+def asphalt(seed=21):
+    rng = np.random.default_rng(seed)
+    v = 0.26 + 0.2 * _noise(rng, 64, 64) + 0.1 * rng.random((64, 64))
+    im = Image.fromarray((np.clip(v, 0, 1) * 255).astype(np.uint8)).convert('RGB')
+    d = ImageDraw.Draw(im)
+    for _ in range(6):   # cracks
+        x, y = rng.integers(0, 64, 2)
+        pts = [(x, y)]
+        for _ in range(5):
+            x += rng.integers(-9, 10); y += rng.integers(-9, 10); pts.append((x, y))
+        d.line(pts, fill=(28, 28, 30), width=1)
+    a = np.asarray(im, np.float32) / 255
+    return a * np.array([0.95, 0.96, 1.0], np.float32)
+
+
+def facade(seed, base, window_lit=False):
+    """4m x 4m of wall with one window, grime running down."""
+    rng = np.random.default_rng(seed)
+    c = Canvas(64, 64, base, 0.0, 1.0)
+    c.d.rectangle([0, 0, 64 * SS, 64 * SS], fill=rgb(base))
+    im = c.im
+    d = ImageDraw.Draw(im, 'RGBA')
+    S_ = SS
+    d.rectangle([16 * S_, 14 * S_, 48 * S_, 40 * S_], fill=(40, 38, 36))                 # frame
+    glass = (120, 105, 70) if window_lit else (18, 20, 24)
+    d.rectangle([18 * S_, 16 * S_, 46 * S_, 38 * S_], fill=glass)
+    d.rectangle([31 * S_, 16 * S_, 33 * S_, 38 * S_], fill=(40, 38, 36))
+    d.rectangle([18 * S_, 26 * S_, 46 * S_, 28 * S_], fill=(40, 38, 36))
+    d.rectangle([14 * S_, 40 * S_, 50 * S_, 43 * S_], fill=tuple(int(v * 255 * 0.8) for v in base))
+    for _ in range(14):   # grime streaks
+        x = rng.integers(0, 64) * S_; y = rng.integers(0, 30) * S_
+        d.rectangle([x, y, x + rng.integers(1, 4) * S_, y + rng.integers(10, 40) * S_],
+                    fill=(20, 18, 15, int(rng.integers(30, 90))))
+    d.rectangle([0, 60 * S_, 64 * S_, 64 * S_], fill=(30, 28, 26, 160))               # floor line
+    a = np.asarray(im.resize((64, 64), Image.BOX), np.float32) / 255
+    return a * (0.85 + 0.3 * _noise(rng, 64, 64)[..., None])
+
+
+def chainlink(rust=False):
+    """RGBA, 0.5m tile, diamond wire mesh."""
+    n = 32
+    yy, xx = np.mgrid[0:n, 0:n]
+    a = ((np.abs(((xx + yy) % 16) - 8) < 1.1) | (np.abs(((xx - yy) % 16) - 8) < 1.1)).astype(np.float32)
+    col = np.array([0.42, 0.24, 0.14]) if rust else np.array([0.62, 0.62, 0.6])
+    im = np.zeros((n, n, 4), np.float32)
+    im[..., :3] = col * (0.8 + 0.4 * np.random.default_rng(3).random((n, n, 1)))
+    im[..., 3] = a
+    return im
+
+
+def chain():
+    """RGBA, one tile = 4 links, vertical."""
+    im = Image.new('RGBA', (16 * SS, 64 * SS), (0, 0, 0, 0))
+    d = ImageDraw.Draw(im)
+    for k in range(4):
+        y = k * 16 * SS
+        if k % 2 == 0:
+            d.ellipse([3 * SS, y, 13 * SS, y + 18 * SS], outline=(110, 70, 45, 255), width=3 * SS)
+        else:
+            d.rectangle([6 * SS, y - 2 * SS, 10 * SS, y + 18 * SS], fill=(90, 55, 35, 255))
+    a = np.asarray(im.resize((16, 64), Image.BOX), np.float32) / 255
+    a[..., 3] = (a[..., 3] > 0.4)
+    return a
+
+
+def rust_grate(seed=5):
+    rng = np.random.default_rng(seed)
+    n = 32
+    yy, xx = np.mgrid[0:n, 0:n]
+    bar = ((xx % 8) < 2) | ((yy % 8) < 2)
+    v = _noise(rng, n, n, ((4, 0.6), (16, 0.4)))
+    metal = np.stack([0.45 + 0.25 * v, 0.24 + 0.1 * v, 0.14 + 0.05 * v], -1)
+    hole = np.array([0.04, 0.03, 0.03])
+    im = np.where(bar[..., None], metal, hole)
+    return im.astype(np.float32)
+
+
+def rust_wall(seed=8):
+    rng = np.random.default_rng(seed)
+    c = Canvas(64, 64, (0.36, 0.18, 0.11), 0.0, 1.0)
+    d = c.d
+    for _ in range(30):
+        x, y = rng.integers(0, 64, 2) * SS
+        r = rng.integers(3, 12) * SS
+        tone = rng.choice([(70, 32, 18), (120, 60, 30), (40, 20, 14)])
+        d.ellipse([x - r, y - r, x + r, y + r], fill=tuple(int(v) for v in tone) + (110,))
+    for x in (0, 31):   # panel seams + rivets
+        d.rectangle([x * SS, 0, (x + 1) * SS, 64 * SS], fill=(25, 12, 8, 255))
+        for y in range(4, 64, 8):
+            d.ellipse([(x + 3) * SS, y * SS, (x + 5) * SS, (y + 2) * SS], fill=(150, 80, 45, 255))
+    for _ in range(3):  # dried blood smears
+        x = rng.integers(5, 55) * SS; y = rng.integers(5, 30) * SS
+        d.polygon([(x, y), (x + 9 * SS, y + 2 * SS), (x + 6 * SS, y + 30 * SS), (x + 2 * SS, y + 26 * SS)],
+                  fill=(70, 6, 6, 200))
+    return c.done()
+
+
+def welcome_sign():
+    from PIL import ImageFont
+    w, h = 160, 72
+    im = Image.new('RGB', (w * SS, h * SS), (196, 186, 150))
+    d = ImageDraw.Draw(im, 'RGBA')
+    d.rectangle([3 * SS, 3 * SS, (w - 3) * SS, (h - 3) * SS], outline=(40, 62, 40), width=3 * SS)
+    try:
+        f1 = ImageFont.truetype('/usr/share/fonts/truetype/dejavu/DejaVuSerif-Bold.ttf', 13 * SS)
+        f2 = ImageFont.truetype('/usr/share/fonts/truetype/dejavu/DejaVuSerif-Bold.ttf', 20 * SS)
+        f3 = ImageFont.truetype('/usr/share/fonts/truetype/dejavu/DejaVuSerif.ttf', 10 * SS)
+    except OSError:
+        f1 = f2 = f3 = ImageFont.load_default()
+    ink = (35, 58, 38)
+    d.text((w * SS / 2, 15 * SS), 'WELCOME TO', font=f1, fill=ink, anchor='mm')
+    d.text((w * SS / 2, 37 * SS), 'INTERLAGOS', font=f2, fill=ink, anchor='mm')
+    d.text((w * SS / 2, 58 * SS), 'pop. 0  \u00b7  est. 2012', font=f3, fill=ink, anchor='mm')
+    rng = np.random.default_rng(4)
+    for _ in range(40):   # rust and rot
+        x, y = rng.integers(0, w, 1)[0] * SS, rng.integers(0, h, 1)[0] * SS
+        r = rng.integers(2, 9) * SS
+        d.ellipse([x - r, y - r, x + r, y + r], fill=(90, 50, 25, int(rng.integers(40, 140))))
+    for _ in range(6):
+        x = rng.integers(0, w) * SS
+        d.rectangle([x, 0, x + 2 * SS, h * SS], fill=(60, 40, 25, 70))
+    return np.asarray(im.resize((w, h), Image.BOX), np.float32) / 255
+
+
+def wood(seed=6):
+    rng = np.random.default_rng(seed)
+    v = 0.5 + 0.3 * np.sin(np.arange(16)[None, :] * 1.3 + rng.random((64, 1)) * 0.5) * 0.3
+    v = v + 0.2 * rng.random((64, 16))
+    return (np.stack([v * 0.45, v * 0.33, v * 0.24], -1)).astype(np.float32)
+
+
+# ---------------------------------------------------------------- Silent Hill street signage
+_FONTS = {'serif': '/usr/share/fonts/truetype/dejavu/DejaVuSerif-Bold.ttf',
+          'sans': '/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf'}
+
+
+def board(w, h, lines, fg, bg, border=None, grime=0.4, seed=0):
+    """Painted sign board. lines: [(text, size_px, font, y_frac)]."""
+    from PIL import ImageFont
+    im = Image.new('RGB', (w * SS, h * SS), rgb(bg))
+    d = ImageDraw.Draw(im, 'RGBA')
+    if border is not None:
+        d.rectangle([2 * SS, 2 * SS, (w - 3) * SS, (h - 3) * SS], outline=rgb(border), width=2 * SS)
+    for text, size, font, yf in lines:
+        try:
+            f = ImageFont.truetype(_FONTS[font], int(size * SS))
+        except OSError:
+            f = ImageFont.load_default()
+        d.text((w * SS / 2, yf * h * SS), text, font=f, fill=rgb(fg), anchor='mm')
+    rng = np.random.default_rng(seed)
+    for _ in range(int(30 * grime)):
+        x, y = rng.integers(0, w) * SS, rng.integers(0, h) * SS
+        r = int(rng.integers(1, 6)) * SS
+        d.ellipse([x - r, y - r, x + r, y + r], fill=(60, 40, 25, int(rng.integers(30, 120))))
+    return np.asarray(im.resize((w, h), Image.BOX), np.float32) / 255
+
+
+def brick(seed=31, tone=(0.42, 0.22, 0.17)):
+    rng = np.random.default_rng(seed)
+    im = np.zeros((64, 64, 3), np.float32)
+    for row in range(16):
+        off = 4 if row % 2 else 0
+        for col in range(-1, 8):
+            x0 = col * 8 + off
+            c = np.array(tone) * (0.8 + 0.35 * rng.random())
+            im[row * 4:row * 4 + 3, max(x0, 0):max(min(x0 + 7, 64), 0)] = c
+    im[im.sum(-1) == 0] = (0.30, 0.29, 0.27)                              # mortar
+    im *= (0.8 + 0.3 * _noise(rng, 64, 64)[..., None])
+    return im
+
+
+def shopfront(seed, wall, frame=(0.12, 0.12, 0.11), lit=False):
+    """4m x 3.5m ground floor bay: big shop window + door, kick plate."""
+    rng = np.random.default_rng(seed)
+    c = Canvas(64, 56, wall, 0.0, 1.0)
+    d = c.d
+    S_ = SS
+    d.rectangle([3 * S_, 10 * S_, 40 * S_, 46 * S_], fill=rgb(frame))
+    glass = (0.30, 0.26, 0.18) if lit else (0.05, 0.06, 0.07)
+    d.rectangle([5 * S_, 12 * S_, 38 * S_, 44 * S_], fill=rgb(glass))
+    for _ in range(5):   # reflections / dirt on the glass
+        x = rng.integers(6, 34) * S_
+        d.line([(x, 13 * S_), (x + 6 * S_, 43 * S_)], fill=(90, 95, 100, 40), width=2 * S_)
+    d.rectangle([46 * S_, 8 * S_, 60 * S_, 56 * S_], fill=rgb(frame))      # door
+    d.rectangle([48 * S_, 10 * S_, 58 * S_, 30 * S_], fill=rgb(glass))
+    d.rectangle([0, 46 * S_, 64 * S_, 56 * S_], fill=tuple(int(v * 160) for v in wall) + (255,))
+    d.rectangle([0, 0, 64 * S_, 6 * S_], fill=(20, 20, 20, 200))         # sign band shadow
+    return c.done()
+
+
+def stripes(c1, c2, n=8):
+    im = np.zeros((16, 16 * n // 2, 3), np.float32)
+    for k in range(n):
+        im[:, k * 8:(k + 1) * 8] = c1 if k % 2 == 0 else c2
+    return im
+
+
 def build_all():
     """Texture table. Returns (list, name->index)."""
     T = {}
@@ -215,5 +421,38 @@ def build_all():
     T['concrete'] = concrete()
     T['num1'] = decal_number('1', (0.95, 0.95, 0.95), (0.08, 0.10, 0.26))
     T['rb_logo'] = redbull_logo()
+    T['asphalt'] = asphalt()
+    T['facade1'] = facade(1, (0.55, 0.52, 0.47))
+    T['facade2'] = facade(2, (0.47, 0.42, 0.38))
+    T['facade3'] = facade(3, (0.40, 0.42, 0.44), window_lit=True)
+    T['chainlink'] = chainlink()
+    T['chainlink_rust'] = chainlink(rust=True)
+    T['chain'] = chain()
+    T['rust_grate'] = rust_grate()
+    T['rust_wall'] = rust_wall()
+    T['welcome'] = welcome_sign()
+    T['brick'] = brick()
+    T['brick_dark'] = brick(32, (0.25, 0.20, 0.18))
+    T['shop_neely'] = shopfront(41, (0.18, 0.24, 0.18))
+    T['shop_heaven'] = shopfront(42, (0.06, 0.05, 0.06), frame=(0.25, 0.08, 0.15))
+    T['shop_cafe'] = shopfront(43, (0.70, 0.66, 0.58), lit=True)
+    T['sign_neely'] = board(80, 56, [("NEELY'S", 14, 'serif', 0.36), ('BAR', 17, 'serif', 0.74)],
+                            (0.95, 0.88, 0.70), (0.10, 0.22, 0.14), border=(0.85, 0.75, 0.5), seed=1)
+    T['sign_neely_h'] = board(192, 32, [("NEELY'S BAR", 22, 'serif', 0.52)], (0.95, 0.88, 0.70),
+                              (0.10, 0.22, 0.14), border=(0.85, 0.75, 0.5), seed=2)
+    T['sign_heaven'] = board(96, 56, [("HEAVEN'S", 14, 'sans', 0.34), ('NIGHT', 19, 'sans', 0.72)],
+                             (1.0, 0.35, 0.75), (0.04, 0.02, 0.04), border=(0.6, 0.2, 0.9),
+                             grime=0.1, seed=3)
+    T['sign_cafe'] = board(160, 40, [('CAFE 5to2', 26, 'sans', 0.5)], (0.95, 0.92, 0.85),
+                           (0.62, 0.08, 0.06), border=(0.95, 0.92, 0.85), seed=4)
+    T['street_sign'] = board(96, 20, [('LINDSEY ST', 11, 'sans', 0.52)], (0.95, 0.95, 0.92),
+                             (0.08, 0.36, 0.18), border=(0.95, 0.95, 0.92), grime=0.2, seed=5)
+    T['street_sign2'] = board(96, 20, [('KATZ ST', 11, 'sans', 0.52)], (0.95, 0.95, 0.92),
+                              (0.08, 0.36, 0.18), border=(0.95, 0.95, 0.92), grime=0.2, seed=6)
+    T['awning'] = stripes((0.55, 0.08, 0.06), (0.85, 0.82, 0.75))
+    T['barricade'] = stripes((0.75, 0.08, 0.06), (0.9, 0.9, 0.88), n=10)
+    T['road_closed'] = board(96, 24, [('ROAD CLOSED', 12, 'sans', 0.52)], (0.08, 0.08, 0.08),
+                             (0.92, 0.82, 0.25), grime=0.6, seed=7)
+    T['wood'] = wood()
     names = list(T)
     return [T[k] for k in names], {k: i for i, k in enumerate(names)}

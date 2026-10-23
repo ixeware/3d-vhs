@@ -12,7 +12,7 @@ import timeline as TL
 import textures
 from engine import rasterize, resolve
 from scenes import Stage
-from shade import shade, volume, dust, bloom, tonemap, ps1_dither
+from shade import shade, volume, dust, ash, bloom, tonemap, ps1_dither
 from vhs import degrade, OW, OH
 
 _STAGE = None
@@ -33,29 +33,38 @@ def clock(t):
 def render_frame(i):
     t = i / TL.FPS
     frame = np.zeros((240, 320, 3))
-    if TL.LAMP1_ON - 0.2 <= t < TL.CUT:
+    if TL.ESTABLISH <= t < TL.CUT:
         shot = _STAGE.shot_alonso(t)
     elif TL.CUT <= t < TL.TAPE_END:
         shot = _STAGE.shot_redbull(t)
     else:
         shot = None
     if shot is not None:
-        scene, occ, cam, spot, glow, dbox = shot
+        cam, spot, env = shot['cam'], shot['spot'], shot['env']
         if spot.I > 0:
-            spot.build_shadow(occ)
-        vis = rasterize(scene, cam)
-        G = resolve(scene, cam, vis, _TEX)
-        lin = shade(G, cam, spot)
-        lin += volume(cam, spot, G['depth'], t, density=0.0065, seed=i)
-        dust(lin, cam, spot, G['depth'], t, box=dbox)
+            spot.build_shadow(shot['occ'], _TEX)
+        vis = rasterize(shot['scene'], cam, textures=_TEX)
+        G = resolve(cam, vis, _TEX)
+        lin = shade(G, cam, spot, env)
+        lin += volume(cam, spot, G['depth'], t, density=0.009, seed=i)
+        dust(lin, cam, spot, G['depth'], t, box=shot['dust'])
+        if env.amb.max() > 0:
+            ash(lin, cam, spot, env, G['depth'], t, ember=shot['ember'])
         lin = bloom(lin, thresh=1.6, radius=3, strength=0.4)
         frame = ps1_dither(tonemap(lin))
 
     # tape events
     glitch, snow_amt = 0.0, 0.0
-    if t < TL.LAMP1_ON - 0.2:
-        snow_amt = 1.0 if t < 0.45 else 0.0
-        glitch = 1.0 if t < 0.6 else 0.3
+    if t < TL.ESTABLISH + 0.3:
+        snow_amt = 1.0 if t < TL.ESTABLISH else 0.0
+        glitch = 1.0
+    if abs(t - TL.LAMP1_ON) < 0.07:
+        glitch = max(glitch, 0.7)
+    for te in (TL.APP_IN, TL.APP_OUT):          # the figure in the fog pops in and out
+        if abs(t - te) < 0.12:
+            glitch = max(glitch, 0.8)
+    if TL.OTHER_START <= t < TL.CUT:            # the tape struggles as the world rusts
+        glitch = max(glitch, 0.5 * (t - TL.OTHER_START) / (TL.CUT - TL.OTHER_START))
     if abs(t - TL.CUT) < 0.18:
         glitch = 1.0
         snow_amt = 0.55 if t >= TL.CUT and t < TL.CUT + 0.07 else 0.0
@@ -64,7 +73,7 @@ def render_frame(i):
         snow_amt = 1.0 if dt < 0.55 else 0.0
         glitch = 1.0 if dt < 0.7 else 0.0
     osd_lines = []
-    if t < 3.2 and int(t * 2) % 2 == 0 or t < 1.0:
+    if t < 2.6 and int(t * 2) % 2 == 0 or t < 1.0:
         osd_lines.append((40, 32, 'PLAY ▶'))
     if TL.CUT <= t < TL.CUT + 0.25 or TL.TAPE_END + 0.6 > t >= TL.TAPE_END:
         osd_lines.append((40, 32, 'TRACKING'))

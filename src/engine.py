@@ -103,6 +103,25 @@ def box(sx, sy, sz, color, **kw):
     return from_indexed(V, F, color, **kw)
 
 
+def tbox(sx, sy, sz, color, tile=1.0, **kw):
+    """Box with per-face UVs in world units / tile (for tiling textures)."""
+    x, y, z = sx / 2, sy / 2, sz / 2
+    faces = [  # corner order: bl, br, tr, tl seen from outside
+        ([(-x, -y, z), (x, -y, z), (x, y, z), (-x, y, z)], sx, sy),
+        ([(x, -y, -z), (-x, -y, -z), (-x, y, -z), (x, y, -z)], sx, sy),
+        ([(x, -y, z), (x, -y, -z), (x, y, -z), (x, y, z)], sz, sy),
+        ([(-x, -y, -z), (-x, -y, z), (-x, y, z), (-x, y, -z)], sz, sy),
+        ([(-x, y, z), (x, y, z), (x, y, -z), (-x, y, -z)], sx, sz),
+        ([(-x, -y, -z), (x, -y, -z), (x, -y, z), (-x, -y, z)], sx, sz)]
+    V, UV, F = [], [], []
+    for corners, w, h in faces:
+        b = len(V)
+        V += corners
+        UV += [(0, 0), (w / tile, 0), (w / tile, h / tile), (0, h / tile)]
+        F += [(b, b + 1, b + 2), (b, b + 2, b + 3)]
+    return from_indexed(V, F, color, UV=UV, **kw)
+
+
 def loft(sections, n=8, color=(1, 1, 1), smooth=True, caps=True, power=2.0, deform=None, **kw):
     """Generalised cylinder along +y.
 
@@ -162,12 +181,13 @@ def quad(w, h, color, uv=((0, 0), (1, 0), (1, 1), (0, 1)), **kw):
     return from_indexed(V, [(0, 1, 2), (0, 2, 3)], color, UV=uv, **kw)
 
 
-def grid(size, cells, color, y=0.0, **kw):
+def grid(size, cells, color, y=0.0, tile=None, **kw):
     xs = np.linspace(-size / 2, size / 2, cells + 1)
     V, UV, F = [], [], []
     for j, z in enumerate(xs):
         for i, x in enumerate(xs):
-            V.append((x, y, z)); UV.append((i / cells * 8, j / cells * 8))
+            V.append((x, y, z))
+            UV.append((x / tile, -z / tile) if tile else (i / cells * 8, j / cells * 8))
     w = cells + 1
     for j in range(cells):
         for i in range(cells):
@@ -206,9 +226,50 @@ class Camera:
 
 
 # ---------------------------------------------------------------- raster
-def rasterize(mesh, cam, near=0.05, snap=True, cull=True):
-    """Returns (tid, b0, b1, invz) visibility buffers."""
+def clip_near(mesh, cam, near):
+    """Split triangles that cross the near plane (Sutherland-Hodgman)."""
+    _, _, z = cam.view(mesh.P.reshape(-1, 3))
+    z = z.reshape(-1, 3)
+    nb = (z < near).sum(1)
+    cross = (nb == 1) | (nb == 2)
+    if not cross.any():
+        return mesh
+    keys = ('P', 'N', 'UV', 'C')
+    new = {k: [] for k in keys}
+    src = []
+    for t in np.nonzero(cross)[0]:
+        zs = z[t]
+        attrs = [getattr(mesh, k)[t] for k in keys]
+        poly = []
+        for i in range(3):
+            j = (i + 1) % 3
+            a_in, b_in = zs[i] >= near, zs[j] >= near
+            if a_in:
+                poly.append([A[i] for A in attrs])
+            if a_in != b_in:
+                f = (near - zs[i]) / (zs[j] - zs[i])
+                poly.append([A[i] + (A[j] - A[i]) * f for A in attrs])
+        for k in range(1, len(poly) - 1):
+            for ai, key in enumerate(keys):
+                new[key].append(np.stack([poly[0][ai], poly[k][ai], poly[k + 1][ai]]))
+            src.append(t)
+    keep = np.nonzero(~cross)[0]
+    src = np.array(src, int)
+    cat = lambda k: np.concatenate([getattr(mesh, k)[keep], np.array(new[k]).reshape(-1, *getattr(mesh, k).shape[1:])])
+    return Mesh(cat('P'), cat('N'), cat('UV'), cat('C'),
+                np.concatenate([mesh.tex[keep], mesh.tex[src]]),
+                np.concatenate([mesh.emis[keep], mesh.emis[src]]),
+                np.concatenate([mesh.spec[keep], mesh.spec[src]]))
+
+
+def rasterize(mesh, cam, near=0.05, snap=True, cull=True, textures=None):
+    """Returns (tid, b0, b1, invz, mesh) visibility buffers.
+
+    The returned mesh is the near-clipped one that tid indexes into.
+    Textures with an alpha channel are alpha-tested (chain-link, chains).
+    """
     W, H = cam.W, cam.H
+    mesh = clip_near(mesh, cam, near * 1.01)
     P = mesh.P.reshape(-1, 3)
     sx, sy, z = cam.project(P)
     sx = sx.reshape(-1, 3); sy = sy.reshape(-1, 3); z = z.reshape(-1, 3)
@@ -222,13 +283,18 @@ def rasterize(mesh, cam, near=0.05, snap=True, cull=True):
     area = (sx[:, 1] - sx[:, 0]) * (sy[:, 2] - sy[:, 0]) - (sx[:, 2] - sx[:, 0]) * (sy[:, 1] - sy[:, 0])
     keep &= np.abs(area) > 1e-6
     idx = np.nonzero(keep)[0]
+    alpha_ids = set()
+    if textures is not None:
+        alpha_ids = {i for i, im in enumerate(textures) if im.shape[2] == 4}
 
     tid = np.full((H, W), -1, np.int32)
     b0 = np.zeros((H, W), np.float32); b1 = np.zeros((H, W), np.float32)
     invz = np.zeros((H, W), np.float32)
     if not len(idx):
-        return tid, b0, b1, invz
+        return tid, b0, b1, invz, mesh
     X, Y, A = sx[idx], sy[idx], area[idx]
+    TEX = mesh.tex[idx]
+    UVs = mesh.UV[idx]
     IZ = 1.0 / z[idx]
     # edge function coefficients: w_k = (a_k*x + b_k*y + c_k) / area
     i1, i2 = [1, 2, 0], [2, 0, 1]
@@ -252,18 +318,25 @@ def rasterize(mesh, cam, near=0.05, snap=True, cull=True):
         d = w0 * iz[0] + w1 * iz[1] + w2 * iz[2]
         zb = invz[ya:yb, xa:xb]
         m = (w0 >= eps) & (w1 >= eps) & (w2 >= eps) & (d > zb)
+        if TEX[k] in alpha_ids and m.any():
+            img = textures[TEX[k]]
+            h, wd = img.shape[:2]
+            uv = UVs[k]
+            u = w0 * uv[0, 0] + w1 * uv[1, 0] + w2 * uv[2, 0]
+            v = w0 * uv[0, 1] + w1 * uv[1, 1] + w2 * uv[2, 1]
+            m &= img[np.floor((1 - v) * h).astype(int) % h, np.floor(u * wd).astype(int) % wd, 3] > 0.5
         if not m.any():
             continue
         zb[m] = d[m]
         tid[ya:yb, xa:xb][m] = idx[k]
         b0[ya:yb, xa:xb][m] = w0[m]
         b1[ya:yb, xa:xb][m] = w1[m]
-    return tid, b0, b1, invz
+    return tid, b0, b1, invz, mesh
 
 
-def resolve(mesh, cam, vis, textures):
+def resolve(cam, vis, textures):
     """Turn the visibility buffer into a G-buffer."""
-    tid, b0, b1, invz = vis
+    tid, b0, b1, invz, mesh = vis
     valid = tid >= 0
     t = tid[valid]
     w = np.stack([b0[valid], b1[valid], 1 - b0[valid] - b1[valid]], 1)
@@ -283,7 +356,7 @@ def resolve(mesh, cam, vis, textures):
         h, wd = img.shape[:2]
         u = np.floor(uv[sel, 0] * wd).astype(int) % wd
         v = np.floor((1 - uv[sel, 1]) * h).astype(int) % h
-        col[sel] *= img[v, u]
+        col[sel] *= img[v, u, :3]
     G = dict(valid=valid, pos=pos, nrm=nrm, alb=col, emis=mesh.emis[t], spec=mesh.spec[t],
              depth=np.where(valid, 1.0 / np.maximum(invz, 1e-9), 1e9))
     return G
