@@ -54,13 +54,53 @@ def limb(length, r0, r1, color, n=7, **kw):
 
 
 # ---------------------------------------------------------------- character
+def mirror_x(m):
+    """Mirror a mesh left/right, keeping its faces pointing outward."""
+    M = S(-1, 1, 1)
+    out = m.xform(M)
+    return Mesh(out.P[:, ::-1], out.N[:, ::-1], out.UV[:, ::-1], out.C[:, ::-1], out.tex, out.emis, out.spec)
+
+
+def capsule(length, r0, r1, color, n=10, **kw):
+    """Rounded limb segment hanging down -y from the joint."""
+    secs = [(0.0, r0 * 0.55, r0 * 0.55)]
+    for t in np.linspace(0, 1, 6):
+        r = r0 + (r1 - r0) * t
+        bulge = 1 + 0.06 * np.sin(np.pi * t)
+        secs.append((-(r0 * 0.4) - t * (length - (r0 + r1) * 0.4), r * bulge, r * bulge * 0.97))
+    secs.append((-length, r1 * 0.55, r1 * 0.55))
+    return loft(secs, n=n, color=color, **kw)
+
+
+def hand_mesh(kind, color, spec=0.05):
+    """Left hand hanging down: fingers along -y, palm facing -x (toward the thigh), thumb toward +z."""
+    parts = [loft([(0.0, 0.016, 0.040), (-0.045, 0.017, 0.045), (-0.085, 0.015, 0.042)],
+                  n=14, color=color, power=2.6)]
+    curl = {'hand': (0.35, 0.3), 'fist': (1.5, 1.4), 'point': (1.5, 1.4)}[kind]
+    for k, (z, L) in enumerate(((0.030, 0.070), (0.010, 0.080), (-0.010, 0.076), (-0.030, 0.062))):
+        c0, c1 = curl
+        if kind == 'point' and k == 0:
+            c0, c1 = 0.0, 0.0
+        seg1 = capsule(L * 0.55, 0.0095, 0.0088, color, n=8)
+        seg2 = capsule(L * 0.5, 0.0088, 0.0075, color, n=8)
+        M1 = T(0, -0.083, z) @ Rz(c0)
+        M2 = M1 @ T(0, -L * 0.52, 0) @ Rz(c1)
+        parts += [seg1.xform(M1), seg2.xform(M2)]
+    th = 0.25 if kind == 'hand' else 0.9
+    parts.append(capsule(0.05, 0.011, 0.009, color, n=8).xform(T(-0.004, -0.02, 0.04) @ Rx(-0.7) @ Rz(th)))
+    return merge(parts).mat(spec=spec)
+
+
 class Look:
     def __init__(self, face, suit_tex, suit_col, limb_col, skin, hair, boots,
-                 cap=None, hair_kw=None, gloves=None, seed=0, legs_col=None):
+                 cap=None, hair_kw=None, gloves=None, seed=0, legs_col=None,
+                 sleeve_tex=None, legs_tex=None, photo=None):
         self.face, self.suit_tex, self.suit_col = face, suit_tex, suit_col
         self.limb_col, self.skin, self.hair, self.boots = limb_col, skin, hair, boots
         self.cap, self.gloves = cap, gloves
         self.legs_col = legs_col or limb_col
+        self.sleeve_tex, self.legs_tex = sleeve_tex, legs_tex
+        self.photo = photo            # (PhotoHead, head texture name, hair texture name)
         self.rng = np.random.default_rng(seed)
         self.hair_kw = hair_kw or {}
         self._cache = {}
@@ -70,36 +110,64 @@ class Look:
         if key in self._cache:
             return self._cache[key]
         P = {}
-        face = self.face + ('_blink' if blink and self.face + '_blink' in tex_ix else '')
-        P['head'] = head_mesh(tex_ix[face])
-        if self.cap is None:
-            P['hair'] = hair_mesh(self.hair, np.random.default_rng(1), **self.hair_kw)
+        if self.photo is not None:
+            ph, ht, hr = self.photo
+            P['head'], P['hair'] = ph.meshes(tex_ix[ht], tex_ix[hr])
+            skin = tuple(ph.skin)
         else:
-            cap = hair_mesh(self.cap, np.random.default_rng(1), spiky=0.0, front=0.055,
-                            back=-0.02, scale=1.09, top=0.95)
-            brim = box(0.15, 0.012, 0.10, self.cap).xform(T(0, 0.05, 0.12) @ Rx(0.12))
-            P['hair'] = merge([cap, brim])
-        P['ear'] = sphere(0.012, 0.026, 0.018, n=5, rings=3, color=self.skin)
-        P['neck'] = loft([(0, 0.048, 0.048), (0.075, 0.045, 0.047)], n=7, color=self.skin)
-        P['collar'] = merge([loft([(0, 0.075, 0.07), (0.045, 0.062, 0.06)], n=8, color=self.suit_col),
-                             loft([(0.045, 0.062, 0.06), (0.055, 0.06, 0.058)], n=8, color=(0.05, 0.05, 0.06))])
-        P['deltoid'] = sphere(0.068, 0.062, 0.062, n=8, rings=5, color=self.limb_col)
-        P['torso'] = loft([(0, 0.145, 0.098), (0.13, 0.148, 0.102), (0.27, 0.166, 0.11),
-                           (0.37, 0.17, 0.105), (0.44, 0.145, 0.09), (0.49, 0.08, 0.068)],
-                          n=10, color=(1, 1, 1), tex=tex_ix[self.suit_tex], power=2.4)
-        P['pelvis'] = loft([(-0.10, 0.13, 0.095), (-0.02, 0.15, 0.10), (0.06, 0.145, 0.098)],
-                           n=10, color=self.legs_col, power=2.4)
-        P['uarm'] = limb(0.29, 0.056, 0.043, self.limb_col)
-        P['farm'] = limb(0.25, 0.043, 0.034, self.limb_col)
-        hc = self.gloves or self.skin
-        P['hand'] = box(0.075, 0.095, 0.032, hc).xform(T(0, -0.05, 0.0))
-        P['fist'] = box(0.08, 0.075, 0.07, hc).xform(T(0, -0.04, 0.01))
-        P['point'] = merge([box(0.08, 0.07, 0.065, hc).xform(T(0, -0.035, 0.01)),
-                            box(0.02, 0.09, 0.02, hc).xform(T(0.022, -0.11, 0.02))])
-        P['thigh'] = limb(0.44, 0.085, 0.06, self.legs_col)
-        P['shin'] = limb(0.43, 0.06, 0.044, self.legs_col)
-        P['foot'] = merge([box(0.095, 0.075, 0.25, self.boots).xform(T(0, -0.035, 0.05)),
-                           box(0.08, 0.03, 0.05, self.boots).xform(T(0, -0.055, 0.19))])
+            face = self.face + ('_blink' if blink and self.face + '_blink' in tex_ix else '')
+            P['head'] = sphere(0.082, HEAD_RY, 0.098, n=32, rings=22, tex=tex_ix[face], deform=_head_deform)
+            if self.cap == 'helmet':
+                shell = sphere(0.122, 0.14, 0.135, n=36, rings=24, color=(0.07, 0.09, 0.25),
+                               deform=lambda V: np.where(V[:, 1:2] < -0.09, np.c_[V[:, 0], np.full(len(V), -0.09), V[:, 2]], V))
+                stripe = loft([(-0.002, 0.123, 0.136), (0.03, 0.123, 0.136)], n=36, color=(0.85, 0.08, 0.16), caps=False)
+                visor = sphere(0.118, 0.06, 0.128, n=28, rings=8, color=(0.02, 0.02, 0.03),
+                               deform=lambda V: V[V[:, 2] > -1])
+                keep = visor.P[..., 2].mean(1) > 0.06
+                visor = Mesh(visor.P[keep], visor.N[keep], visor.UV[keep], visor.C[keep], visor.tex[keep],
+                             visor.emis[keep], visor.spec[keep]).mat(spec=1.2)
+                P['hair'] = merge([shell.mat(spec=0.9).xform(T(0, 0.015, -0.005)), stripe.xform(T(0, 0.04, -0.005)),
+                                   visor.xform(T(0, 0.0, 0.012))])
+            elif self.cap is None:
+                P['hair'] = hair_mesh(self.hair, np.random.default_rng(1), **self.hair_kw)
+            else:
+                cap = sphere(0.082 * 1.1, HEAD_RY * 1.05, 0.098 * 1.1, n=28, rings=16, color=self.cap,
+                             deform=lambda V: np.where(V[:, 1:2] < 0.045, np.c_[V[:, 0] * 0.9, np.full(len(V), 0.045), V[:, 2] * 0.9], V))
+                brim = loft([(0, 0.075, 0.06), (0.012, 0.075, 0.06)], n=20, color=self.cap).xform(
+                    T(0, 0.045, 0.085) @ Rx(0.18) @ S(1, 1, 1.0))
+                P['hair'] = merge([cap, brim])
+            P['ear'] = sphere(0.012, 0.026, 0.018, n=10, rings=6, color=self.skin)
+            skin = self.skin
+        sl = dict(tex=tex_ix[self.sleeve_tex]) if self.sleeve_tex else {}
+        lg = dict(tex=tex_ix[self.legs_tex]) if self.legs_tex else {}
+        limb_c = (1, 1, 1) if sl else self.limb_col
+        legs_c = (1, 1, 1) if lg else self.legs_col
+        P['neck'] = loft([(-0.02, 0.056, 0.056), (0.04, 0.05, 0.052), (0.09, 0.047, 0.05)], n=18, color=skin)
+        P['collar'] = merge([loft([(0, 0.078, 0.072), (0.03, 0.068, 0.064), (0.06, 0.062, 0.06)],
+                                  n=24, color=self.suit_col),
+                             loft([(0.06, 0.062, 0.06), (0.066, 0.06, 0.058)], n=24, color=(0.05, 0.05, 0.06))])
+        P['deltoid'] = sphere(0.056, 0.058, 0.058, n=20, rings=12, color=limb_c, **sl)
+        P['torso'] = loft([(0, 0.148, 0.100), (0.08, 0.150, 0.103), (0.16, 0.153, 0.106), (0.24, 0.163, 0.112),
+                           (0.31, 0.166, 0.115), (0.37, 0.168, 0.110), (0.42, 0.160, 0.100), (0.46, 0.140, 0.088),
+                           (0.49, 0.100, 0.074), (0.505, 0.075, 0.066)],
+                          n=32, color=(1, 1, 1), tex=tex_ix[self.suit_tex], power=2.3)
+        P['pelvis'] = loft([(-0.11, 0.128, 0.094), (-0.06, 0.145, 0.100), (-0.01, 0.150, 0.102), (0.06, 0.148, 0.100)],
+                           n=32, color=legs_c, power=2.3, **lg)
+        P['uarm'] = capsule(0.29, 0.056, 0.043, limb_c, n=18, **sl)
+        P['farm'] = capsule(0.25, 0.043, 0.032, limb_c, n=18, **sl)
+        hc = self.gloves or skin
+        for k in ('hand', 'fist', 'point'):
+            P[k] = hand_mesh(k, hc)
+            P[k + '_R'] = mirror_x(P[k])
+        P['thigh'] = capsule(0.43, 0.086, 0.060, legs_c, n=20, **lg)
+        P['shin'] = capsule(0.42, 0.060, 0.044, legs_c, n=20, **lg)
+        boot = loft([(-0.08, 0.035, 0.03), (-0.04, 0.047, 0.05), (0.06, 0.048, 0.045), (0.15, 0.042, 0.035),
+                     (0.19, 0.03, 0.022)], n=16, color=self.boots, power=2.4)
+        boot = Mesh(np.stack([boot.P[..., 0], boot.P[..., 2], boot.P[..., 1]], -1)[:, ::-1],
+                    np.stack([boot.N[..., 0], boot.N[..., 2], boot.N[..., 1]], -1)[:, ::-1],
+                    boot.UV[:, ::-1], boot.C, boot.tex, boot.emis, boot.spec)
+        P['foot'] = merge([boot.xform(T(0, -0.04, 0.0)),
+                           loft([(0, 0.05, 0.05), (0.08, 0.046, 0.046)], n=16, color=self.boots).xform(T(0, -0.04, -0.01))])
         self._cache[key] = P
         return P
 
@@ -121,32 +189,35 @@ def character(look, tex_ix, root, pose, blink=False):
         x, y, z = p[name]
         return R(x, -y if mirror else y, -z if mirror else z)
 
-    pel = root @ T(0, 0.93 + p.get('lift', 0.0), 0) @ rot('pelvis')
+    pel = root @ T(0, 0.99 + p.get('lift', 0.0), 0) @ rot('pelvis')
     out.append(P['pelvis'].xform(pel))
     ch = pel @ T(0, 0.06, 0) @ rot('spine')
     out.append(P['torso'].xform(ch))
     nk = ch @ T(0, 0.47, 0.0) @ rot('neck')
     out.append(P['collar'].xform(ch @ T(0, 0.46, 0)))
     out.append(P['neck'].xform(nk))
-    hd = nk @ T(0, 0.06 + HEAD_RY * 0.85, 0.012) @ rot('head') @ S(1.08)
+    if look.photo is not None:
+        hd = nk @ T(0, 0.10, 0.03) @ rot('head') @ S(1.08)
+    else:
+        hd = nk @ T(0, 0.06 + HEAD_RY * 0.85, 0.012) @ rot('head') @ S(1.08)
+        for s in (-1, 1):
+            out.append(P['ear'].xform(hd @ T(s * 0.079, 0.0, -0.005)))
     out.append(P['head'].xform(hd))
     out.append(P['hair'].xform(hd))
-    for s in (-1, 1):
-        out.append(P['ear'].xform(hd @ T(s * 0.079, 0.0, -0.005)))
     for side, s in (('L', 1), ('R', -1)):
-        sh = ch @ T(s * 0.175, 0.40, 0) @ rot('shoulder' + side, s < 0)
+        sh = ch @ T(s * 0.163, 0.405, 0) @ rot('shoulder' + side, s < 0)
         out.append(P['uarm'].xform(sh))
         out.append(P['deltoid'].xform(sh @ T(0, -0.01, 0)))
         el = sh @ T(0, -0.29, 0) @ rot('elbow' + side, s < 0)
         out.append(P['farm'].xform(el))
         wr = el @ T(0, -0.25, 0) @ rot('wrist' + side, s < 0)
-        hand = P[p['hand' + side]]
+        hand = P[p['hand' + side] + ('' if s > 0 else '_R')]
         out.append(hand.xform(wr))
         hp = pel @ T(s * 0.085, -0.05, 0) @ rot('hip' + side, s < 0)
         out.append(P['thigh'].xform(hp))
-        kn = hp @ T(0, -0.44, 0) @ rot('knee' + side, s < 0)
+        kn = hp @ T(0, -0.43, 0) @ rot('knee' + side, s < 0)
         out.append(P['shin'].xform(kn))
-        an = kn @ T(0, -0.43, 0) @ rot('ankle' + side, s < 0)
+        an = kn @ T(0, -0.42, 0) @ rot('ankle' + side, s < 0)
         out.append(P['foot'].xform(an))
     return merge(out)
 

@@ -209,6 +209,13 @@ class Camera:
         self.W, self.H = W, H
         self.fpx = (H / 2) / np.tan(np.radians(fov_deg) / 2)
 
+    def scaled(self, k):
+        """Same camera at a different resolution."""
+        import copy
+        c = copy.copy(self)
+        c.W, c.H, c.fpx = int(self.W * k), int(self.H * k), self.fpx * k
+        return c
+
     def view(self, P):
         d = P - self.eye
         return d @ self.r, d @ self.u, d @ self.f
@@ -305,7 +312,10 @@ def rasterize(mesh, cam, near=0.05, snap=True, cull=True, textures=None):
     y0 = np.clip(np.floor(Y.min(1)).astype(int), 0, H); y1 = np.clip(np.ceil(Y.max(1)).astype(int) + 1, 0, H)
     px = np.arange(W) + 0.5; py = np.arange(H) + 0.5
     eps = -1e-5
-    for k in range(len(idx)):
+    bw, bh = x1 - x0, y1 - y0
+    has_alpha = np.isin(TEX, list(alpha_ids)) if alpha_ids else np.zeros(len(idx), bool)
+    small = (bw <= 8) & (bh <= 8) & ~has_alpha
+    for k in np.nonzero(~small)[0]:
         xa, xb, ya, yb = x0[k], x1[k], y0[k], y1[k]
         if xa >= xb or ya >= yb:
             continue
@@ -331,10 +341,45 @@ def rasterize(mesh, cam, near=0.05, snap=True, cull=True, textures=None):
         tid[ya:yb, xa:xb][m] = idx[k]
         b0[ya:yb, xa:xb][m] = w0[m]
         b1[ya:yb, xa:xb][m] = w1[m]
+    _raster_small(np.nonzero(small)[0], idx, x0, y0, bw, bh, ea, eb, ec, IZ, W, tid, b0, b1, invz, eps)
     return tid, b0, b1, invz, mesh
 
 
-def resolve(cam, vis, textures):
+def _raster_small(ks, idx, x0, y0, bw, bh, ea, eb, ec, IZ, W, tid, b0, b1, invz, eps):
+    """Vectorised path for the many tiny triangles of high-poly meshes."""
+    if not len(ks):
+        return
+    P, D, Tr, B0, B1 = [], [], [], [], []
+    lo = 0
+    for size in (2, 4, 8):
+        sel = ks[(np.maximum(bw[ks], bh[ks]) > lo) & (np.maximum(bw[ks], bh[ks]) <= size)]
+        lo = size
+        if not len(sel):
+            continue
+        oy, ox = np.mgrid[0:size, 0:size].reshape(2, -1)
+        cx = x0[sel, None] + ox[None]
+        cy = y0[sel, None] + oy[None]
+        ok = (ox[None] < bw[sel, None]) & (oy[None] < bh[sel, None])
+        fx, fy = cx + 0.5, cy + 0.5
+        w0 = ea[sel, 0, None] * fx + eb[sel, 0, None] * fy + ec[sel, 0, None]
+        w1 = ea[sel, 1, None] * fx + eb[sel, 1, None] * fy + ec[sel, 1, None]
+        w2 = 1.0 - w0 - w1
+        ok &= (w0 >= eps) & (w1 >= eps) & (w2 >= eps)
+        d = w0 * IZ[sel, 0, None] + w1 * IZ[sel, 1, None] + w2 * IZ[sel, 2, None]
+        P.append((cy * W + cx)[ok]); D.append(d[ok])
+        Tr.append(np.broadcast_to(idx[sel, None], ok.shape)[ok]); B0.append(w0[ok]); B1.append(w1[ok])
+    if not P:
+        return
+    P = np.concatenate(P); D = np.concatenate(D).astype(np.float32)
+    flat = invz.reshape(-1)
+    np.maximum.at(flat, P, D)
+    win = D >= flat[P]
+    tid.reshape(-1)[P[win]] = np.concatenate(Tr)[win]
+    b0.reshape(-1)[P[win]] = np.concatenate(B0)[win]
+    b1.reshape(-1)[P[win]] = np.concatenate(B1)[win]
+
+
+def resolve(cam, vis, textures, affine_uv=False):
     """Turn the visibility buffer into a G-buffer."""
     tid, b0, b1, invz, mesh = vis
     valid = tid >= 0
@@ -346,7 +391,7 @@ def resolve(cam, vis, textures):
     pos = np.einsum('nk,nkc->nc', pw, mesh.P[t])
     nrm = norm(np.einsum('nk,nkc->nc', pw, mesh.N[t]))
     col = np.einsum('nk,nkc->nc', w, mesh.C[t])
-    uv = np.einsum('nk,nkc->nc', w, mesh.UV[t])     # affine: PS1 warp
+    uv = np.einsum('nk,nkc->nc', w if affine_uv else pw, mesh.UV[t])
     tex = mesh.tex[t]
     for ti in np.unique(tex):
         if ti < 0:

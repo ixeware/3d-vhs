@@ -5,8 +5,9 @@ from models import Look, character, rb8, theatre_lamp
 from sets import town, street_lamp, otherworld
 from shade import Spot, Env
 import timeline as TL
+import heads
 
-W, H = 320, 240
+W, H = 640, 480
 
 FERRARI_RED = (0.62, 0.03, 0.03)
 RB_NAVY = (0.07, 0.09, 0.24)
@@ -58,17 +59,20 @@ class Stage:
         self.tx = tex_ix
         self.alonso = Look('alonso', 'suit_ferrari', FERRARI_RED, FERRARI_RED, (0.80, 0.60, 0.47),
                            (0.09, 0.06, 0.05), (0.08, 0.08, 0.09),
-                           hair_kw=dict(spiky=0.03, front=0.064, back=-0.075))
+                           sleeve_tex='sleeve_ferrari', legs_tex='legs_ferrari',
+                           photo=(heads.alonso(), 'alonso_head', 'alonso_hair'))
         self.vettel = Look('vettel', 'suit_redbull', RB_NAVY, RB_NAVY, (0.93, 0.76, 0.66),
                            (0.80, 0.64, 0.38), (0.06, 0.06, 0.08),
-                           hair_kw=dict(spiky=0.01, front=0.07, back=-0.07))
+                           sleeve_tex='sleeve_redbull', legs_tex='legs_redbull',
+                           photo=(heads.vettel(), 'vettel_head', 'vettel_hair'))
         skins = [(0.86, 0.68, 0.56), (0.62, 0.44, 0.32), (0.92, 0.75, 0.65), (0.45, 0.30, 0.22),
                  (0.84, 0.66, 0.55)]
         hairs = [(0.30, 0.20, 0.12), (0.06, 0.05, 0.05), (0.75, 0.55, 0.30), (0.05, 0.04, 0.04),
                  (0.45, 0.30, 0.18)]
-        caps = [RB_NAVY, None, None, RB_NAVY, None]
+        caps = ['helmet'] * 5
         self.mechs = [Look(f'mech{i}', 'suit_mech', RB_NAVY, RB_NAVY, skins[i], hairs[i],
-                           (0.05, 0.05, 0.06), cap=caps[i], legs_col=(0.06, 0.07, 0.16))
+                           (0.05, 0.05, 0.06), cap=caps[i], legs_col=(0.06, 0.07, 0.16),
+                           sleeve_tex='sleeve_mech', legs_tex='legs_mech')
                       for i in range(5)]
         self.car = rb8(tex_ix)
 
@@ -86,8 +90,8 @@ class Stage:
         blink = any(abs(t - b) < 0.06 for b in (6.1, 11.6))
         pose = dict(
             pelvis=(0, 0.0, 0.0), spine=(0.03 + 0.01 * breath, 0.05, 0.0),
-            neck=(0.05, -0.15 - 0.15 * turn, 0.0),
-            head=(0.13 - 0.04 * turn, -0.25 - 0.30 * turn, 0.05 * (1 - turn)),
+            neck=(0.03, 0.4 * (-0.9 + 0.61 * turn), 0.0),
+            head=(0.10 - 0.04 * turn, 0.6 * (-0.9 + 0.61 * turn), 0.04 * (1 - turn)),
             shoulderL=(0.05, 0, 0.10), shoulderR=(-0.02, 0, 0.12),
             elbowL=(-0.25, 0, 0), elbowR=(-0.18, 0, 0),
             hipL=(0, 0, 0.05), hipR=(0, 0, 0.03), kneeL=(0.04, 0, 0))

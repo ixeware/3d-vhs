@@ -398,6 +398,169 @@ def stripes(c1, c2, n=8):
     return im
 
 
+# ---------------------------------------------------------------- HD race suits
+class HD:
+    """1024px painter in (angle_deg, v) space: angle 0 = chest centre, +-180 = spine."""
+
+    def __init__(self, base, w=1024, h=1024, k=2, xs=0.5):
+        self.w, self.h, self.k = w, h, k
+        self.xs = xs                  # texels are ~2x wider than tall once wrapped on the body
+        self.im = Image.new('RGB', (w * k, h * k), rgb(base))
+        self.d = ImageDraw.Draw(self.im, 'RGBA')
+
+    def p(self, ang, v):
+        return ((0.5 + ang / 360.0) * self.w * self.k, (1 - v) * self.h * self.k)
+
+    def rect(self, a0, v0, a1, v1, fill, alpha=255, r=0):
+        x0, y0 = self.p(a0, v1); x1, y1 = self.p(a1, v0)
+        self.d.rounded_rectangle([x0, y0, x1, y1], radius=r * self.k, fill=rgb(fill) + (alpha,))
+
+    def poly(self, pts, fill, alpha=255):
+        self.d.polygon([self.p(a, v) for a, v in pts], fill=rgb(fill) + (alpha,))
+
+    def ellipse(self, a, v, ra, rv, fill, alpha=255, outline=None, width=0):
+        x0, y0 = self.p(a - ra, v + rv); x1, y1 = self.p(a + ra, v - rv)
+        self.d.ellipse([x0, y0, x1, y1], fill=rgb(fill) + (alpha,) if fill is not None else None,
+                       outline=rgb(outline) if outline else None, width=width * self.k)
+
+    def line(self, pts, fill, width=1.0, alpha=255):
+        self.d.line([self.p(a, v) for a, v in pts], fill=rgb(fill) + (alpha,), width=max(1, int(width * self.k)))
+
+    def text(self, a, v, txt, size, fill, font='sans', stretch=1.0):
+        from PIL import ImageFont
+        f = ImageFont.truetype(_FONTS[font], int(size * self.k))
+        x, y = self.p(a, v)
+        stretch *= self.xs
+        tw, th = int(f.getlength(txt)) + 4, int(size * self.k * 1.4)
+        tmp = Image.new('RGBA', (tw, th), (0, 0, 0, 0))
+        ImageDraw.Draw(tmp).text((tw / 2, th / 2), txt, font=f, fill=rgb(fill), anchor='mm')
+        tmp = tmp.resize((max(1, int(tw * stretch)), th), Image.LANCZOS)
+        self.im.paste(tmp, (int(x - tmp.width / 2), int(y - th / 2)), tmp)
+
+    def quilt(self, col, dv=0.07, dang=22, alpha=90):
+        for v in np.arange(0.0, 1.0, dv):
+            self.line([(-180, v), (180, v)], col, 1.2, alpha)
+        for ang in np.arange(-180, 180, dang):
+            self.line([(ang, 0), (ang, 1)], col, 1.0, int(alpha * 0.7))
+
+    def done(self, seed=0, grain=0.06):
+        im = np.asarray(self.im.resize((self.w, self.h), Image.LANCZOS), np.float32) / 255
+        rng = np.random.default_rng(seed)
+        n = rng.standard_normal((self.h // 4, self.w // 4)).repeat(4, 0).repeat(4, 1)
+        return np.clip(im * (1 + grain * n[..., None]), 0, 1).astype(np.float32)
+
+
+def _santander(c, a, v, w, h, fg, bg=None):
+    """Flame mark + wordmark in a box w degrees wide, h (v units) tall."""
+    if bg is not None:
+        c.rect(a - w / 2, v - h / 2, a + w / 2, v + h / 2, bg, r=6)
+    fa = a - w * 0.36
+    c.poly([(fa, v - h * 0.32), (fa - w * 0.035, v + h * 0.05), (fa, v + h * 0.34), (fa + w * 0.035, v)], fg)
+    c.text(a + w * 0.07, v, 'Santander', h * 1024 * 0.55, fg, 'serif', stretch=0.85)
+
+
+def _shell(c, a, v, w, h):
+    c.rect(a - w / 2, v - h / 2, a + w / 2, v + h / 2, (0.97, 0.97, 0.95), r=6)
+    c.ellipse(a, v + h * 0.02, w * 0.36, h * 0.36, (0.98, 0.78, 0.05), outline=(0.85, 0.12, 0.05), width=3)
+    c.rect(a - w * 0.4, v - h * 0.4, a + w * 0.4, v - h * 0.18, (0.97, 0.97, 0.95))
+    for k in range(-3, 4):
+        c.line([(a, v - h * 0.2), (a + k * w * 0.09, v + h * 0.33)], (0.85, 0.12, 0.05), 2)
+
+
+def _ferrari_panel(c, a, v, w, h):
+    c.poly([(a - w / 2, v - h / 2), (a + w / 2, v - h / 2), (a + w * 0.42, v + h / 2), (a - w * 0.42, v + h / 2)],
+           (0.97, 0.97, 0.95))
+    sa, sv, sw, sh = a - w * 0.22, v + h * 0.1, w * 0.13, h * 0.32
+    c.poly([(sa - sw, sv + sh), (sa + sw, sv + sh), (sa + sw, sv - sh * 0.3), (sa, sv - sh), (sa - sw, sv - sh * 0.3)],
+           (1.0, 0.82, 0.0))
+    c.rect(sa - sw, sv + sh * 0.75, sa + sw, sv + sh, (0.1, 0.55, 0.25))
+    c.poly([(sa - sw * 0.3, sv - sh * 0.6), (sa + sw * 0.25, sv + sh * 0.55), (sa + sw * 0.5, sv + sh * 0.4),
+            (sa + sw * 0.05, sv - sh * 0.6)], (0.05, 0.05, 0.05))
+    c.line([(a - w * 0.02, v + h * 0.12), (a + w * 0.38, v + h * 0.3)], (0.85, 0.05, 0.05), 3)
+    c.text(a + w * 0.16, v - h * 0.22, 'SCUDERIA FERRARI', h * 1024 * 0.16, (0.3, 0.3, 0.3), 'sans', stretch=0.75)
+
+
+def _redbull(c, a, v, w, h, red=(0.86, 0.06, 0.16), sun=(1.0, 0.78, 0.0)):
+    c.ellipse(a, v + h * 0.12, w * 0.2, h * 0.36, sun)
+    for sgn in (-1, 1):
+        x = a + sgn * w * 0.25
+        c.ellipse(x, v - h * 0.08, w * 0.2, h * 0.24, red)                                   # body
+        c.ellipse(a + sgn * w * 0.08, v + h * 0.02, w * 0.075, h * 0.17, red)              # lowered head
+        c.poly([(a + sgn * w * 0.06, v + h * 0.14), (a + sgn * w * 0.02, v + h * 0.33),
+                (a + sgn * w * 0.11, v + h * 0.15)], red)                                    # horn
+        for lx in (0.12, 0.38):
+            c.rect(a + sgn * w * lx - w * 0.025, v - h * 0.45, a + sgn * w * lx + w * 0.025, v - h * 0.2, red)
+        c.poly([(a + sgn * w * 0.44, v - h * 0.05), (a + sgn * w * 0.5, v + h * 0.12),
+                (a + sgn * w * 0.46, v - h * 0.1)], red)                                     # tail
+
+
+def suit_torso(kind):
+    if kind == 'ferrari':
+        c = HD((0.80, 0.06, 0.05))
+        c.quilt((0.45, 0.02, 0.02))
+        for sgn in (-1, 1):                                       # Italian flag piping down the sides
+            for k, col in enumerate(((0.0, 0.55, 0.25), (0.97, 0.97, 0.95), (0.0, 0.55, 0.25))):
+                a0 = sgn * (70 + k * 3.2)
+                c.rect(min(a0, a0 + sgn * 3.2), 0.18, max(a0, a0 + sgn * 3.2), 0.86, col)
+            c.line([(sgn * 30, 0.985), (sgn * 70, 0.93), (sgn * 95, 0.90)], (0.97, 0.97, 0.95), 3)   # shoulder piping
+            c.line([(sgn * 32, 0.97), (sgn * 72, 0.915), (sgn * 96, 0.885)], (0.97, 0.97, 0.95), 2)
+        _shell(c, -24, 0.80, 26, 0.15)
+        _ferrari_panel(c, 26, 0.80, 36, 0.14)
+        _santander(c, 0, 0.635, 92, 0.095, (0.85, 0.05, 0.05), bg=(0.98, 0.98, 0.97))
+        c.rect(-180, 0.03, 180, 0.12, (0.62, 0.03, 0.03))                                       # belt
+        c.rect(-6, 0.065, 8, 0.095, (0.85, 0.05, 0.05)); c.rect(-6, 0.073, 8, 0.087, (1.0, 0.8, 0.0))   # Spain
+        c.text(26, 0.08, 'FERNANDO', 30, (0.98, 0.98, 0.98), 'sans', stretch=0.8)
+        c.text(-26, 0.08, 'PUMA', 30, (0.98, 0.98, 0.98), 'sans', stretch=0.8)
+        c.text(0, 0.965, 'Santander', 26, (0.98, 0.98, 0.98), 'serif')
+        for a0 in (180, -180):
+            _santander(c, a0, 0.74, 100, 0.10, (0.98, 0.98, 0.97))
+            c.text(a0, 0.55, 'ALONSO', 60, (0.98, 0.98, 0.97), 'sans')
+        return c.done(1, grain=0.025)
+    if kind == 'redbull':
+        c = HD((0.06, 0.08, 0.24))
+        c.quilt((0.02, 0.03, 0.10))
+        for sgn in (-1, 1):
+            c.poly([(sgn * 60, 0.1), (sgn * 100, 0.1), (sgn * 100, 0.5), (sgn * 75, 0.35)], (0.75, 0.06, 0.14))
+            c.poly([(sgn * 66, 0.1), (sgn * 78, 0.1), (sgn * 96, 0.42), (sgn * 90, 0.44)], (1.0, 0.78, 0.0))
+        _redbull(c, 0, 0.70, 80, 0.16)
+        c.text(0, 0.86, 'INFINITI', 46, (0.97, 0.97, 0.97), 'sans', stretch=1.1)
+        c.text(-26, 0.55, 'TOTAL', 34, (0.97, 0.3, 0.1), 'sans')
+        c.text(26, 0.55, 'Pepe Jeans', 28, (0.97, 0.97, 0.97), 'serif')
+        c.rect(-180, 0.03, 180, 0.12, (0.04, 0.05, 0.16))
+        c.text(0, 0.08, 'SEBASTIAN', 30, (0.97, 0.97, 0.97), 'sans', stretch=0.8)
+        c.text(0, 0.965, 'RED BULL RACING', 22, (0.97, 0.97, 0.97), 'sans')
+        for a0 in (180, -180):
+            _redbull(c, a0, 0.7, 80, 0.16)
+        return c.done(2, grain=0.025)
+    # mechanic team shirt
+    c = HD((0.07, 0.09, 0.25))
+    for sgn in (-1, 1):
+        c.rect(sgn * 80 - 4, 0.0, sgn * 80 + 4, 1.0, (0.75, 0.06, 0.14))
+    _redbull(c, -22, 0.76, 34, 0.08)
+    c.text(24, 0.78, 'INFINITI', 30, (0.97, 0.97, 0.97), 'sans')
+    c.text(0, 0.62, 'RED BULL RACING', 30, (0.97, 0.97, 0.97), 'sans')
+    for a0 in (180, -180):
+        c.text(a0, 0.72, 'RED BULL', 64, (0.97, 0.97, 0.97), 'sans')
+    return c.done(3, grain=0.02)
+
+
+def suit_limb(kind, part):
+    """Sleeves and legs: u around the limb, v along it (0 = far end)."""
+    base = {'ferrari': (0.80, 0.06, 0.05), 'redbull': (0.06, 0.08, 0.24), 'mech': (0.07, 0.09, 0.25),
+            'mech_legs': (0.05, 0.06, 0.16)}[kind]
+    c = HD(base, 256, 512)
+    if kind in ('ferrari', 'redbull'):
+        c.quilt(tuple(np.array(base) * 0.55), dv=0.09, dang=45)
+    if kind == 'ferrari' and part == 'sleeve':
+        c.rect(-180, 0.0, 180, 0.05, (0.62, 0.03, 0.03))
+        c.rect(150, 0.2, 180, 0.95, (0.97, 0.97, 0.95)); c.rect(-180, 0.2, -150, 0.95, (0.97, 0.97, 0.95))
+    if kind == 'redbull':
+        c.rect(-180, 0.02, 180, 0.08, (0.75, 0.06, 0.14)); c.rect(-180, 0.08, 180, 0.11, (1.0, 0.78, 0.0))
+    if kind == 'mech' and part == 'sleeve':
+        c.rect(-180, 0.0, 180, 0.04, (0.75, 0.06, 0.14))
+    return c.done(4, grain=0.04)
+
+
 def build_all():
     """Texture table. Returns (list, name->index)."""
     T = {}
@@ -415,9 +578,15 @@ def build_all():
         T[f'mech{i}'] = face(skin=sk, hair=hr, brow=mix(hr, (0, 0, 0), 0.4), iris=(0.2, 0.15, 0.1),
                              stubble=0.3 * (i % 2), mouth='open' if i % 2 == 0 else 'smile',
                              lid=0.0, brow_angle=-8)
-    T['suit_ferrari'] = suit('ferrari')
-    T['suit_redbull'] = suit('redbull')
-    T['suit_mech'] = suit('mech')
+    T['suit_ferrari'] = suit_torso('ferrari')
+    T['suit_redbull'] = suit_torso('redbull')
+    T['suit_mech'] = suit_torso('mech')
+    T['sleeve_ferrari'] = suit_limb('ferrari', 'sleeve')
+    T['legs_ferrari'] = suit_limb('ferrari', 'legs')
+    T['sleeve_redbull'] = suit_limb('redbull', 'sleeve')
+    T['legs_redbull'] = suit_limb('redbull', 'legs')
+    T['sleeve_mech'] = suit_limb('mech', 'sleeve')
+    T['legs_mech'] = suit_limb('mech_legs', 'legs')
     T['concrete'] = concrete()
     T['num1'] = decal_number('1', (0.95, 0.95, 0.95), (0.08, 0.10, 0.26))
     T['rb_logo'] = redbull_logo()
@@ -454,5 +623,12 @@ def build_all():
     T['road_closed'] = board(96, 24, [('ROAD CLOSED', 12, 'sans', 0.52)], (0.08, 0.08, 0.08),
                              (0.92, 0.82, 0.25), grime=0.6, seed=7)
     T['wood'] = wood()
+    import heads
+    al = heads.alonso()
+    T['alonso_head'] = al.head_texture()
+    T['alonso_hair'] = al.hair_texture()
+    sv = heads.vettel()
+    T['vettel_head'] = sv.head_texture()
+    T['vettel_hair'] = sv.hair_texture()
     names = list(T)
     return [T[k] for k in names], {k: i for i, k in enumerate(names)}

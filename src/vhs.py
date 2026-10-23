@@ -61,9 +61,9 @@ def _shift_rows(a, offs):
 
 
 def degrade(frame, i, t, glitch=0.0, osd_lines=None, snow_amt=0.0):
-    """frame: (240,320,3) in [0,1]. glitch: 0..1 tracking trouble."""
+    """frame: (480,640,3) in [0,1]. glitch: 0..1 tracking trouble."""
     rng = np.random.default_rng(1000 + i)
-    img = np.kron(frame, np.ones((2, 2, 1)))
+    img = frame
     img = osd(img, t, osd_lines)
     if snow_amt > 0:
         img = img * (1 - snow_amt) + snow(rng) * snow_amt

@@ -1,7 +1,8 @@
 # 3d-vhs — "Perfection was not enough" (2012)
 
-A 25-second PS1 / Silent Hill style 3D clip on a worn VHS tape, made entirely in
-code: a numpy software rasterizer, no Blender and no 3D packages.
+A 25-second Silent Hill style 3D clip on a worn VHS tape, made entirely in code: a
+numpy software rasterizer, no Blender and no 3D packages. The drivers are realistic
+high-poly models whose faces are real photographs projected onto sculpted heads.
 
 Output: [`out/alonso_2012_vhs.mp4`](out/alonso_2012_vhs.mp4) (960×720, 30 fps, H.264 + AAC)
 
@@ -29,18 +30,26 @@ Output: [`out/alonso_2012_vhs.mp4`](out/alonso_2012_vhs.mp4) (960×720, 30 fps, 
 ## How it works
 | file | what it does |
 |---|---|
-| `src/engine.py` | triangle soup meshes, primitives (box, loft, sphere), camera, near-plane clipping, rasterizer with alpha-tested textures that writes a visibility buffer and then resolves it. Vertices snap to whole pixels and UVs are interpolated affinely, which gives the PS1 wobble and texture warp |
-| `src/models.py` | low-poly characters on a small FK rig, the RB8, the Fresnel theatre lamp |
+| `src/engine.py` | triangle soup meshes, primitives (box, loft, sphere), camera, near-plane clipping, a rasterizer with a vectorised path for the many tiny triangles of high-poly meshes and alpha-tested textures; it writes a visibility buffer that is then resolved with perspective-correct UVs |
+| `src/heads.py` | photo heads: a dense head mesh sculpted to the landmarks of a frontal photo (nose, brow, sockets, cheekbones, lips, chin), the photo projected on it and baked into its texture; hair grown out of the scalp with its cut-out taken from the photo, or a cap for Vettel |
+| `src/models.py` | smooth high-poly characters on a small FK rig (hands with fingers, boots, pit-crew helmets), the RB8, the Fresnel theatre lamp |
 | `src/sets.py` | the two locations: the Silent Hill street (shopfronts and signs, utility poles and wires, traffic light, parked cars, the torn road and abyss) and the rusted Otherworld cage |
-| `src/textures.py` | painted faces (with a blink frame), race suits, livery, concrete floor |
-| `src/shade.py` | spotlight with a shadow map, light bouncing off the floor, distance fog and sky light, ray-marched volumetric beam, dust, falling ash and embers, bloom, PS1 15-bit ordered dither |
+| `src/textures.py` | 1024px race suits (Ferrari 2012: Santander, Shell, Scuderia Ferrari panel, Italian piping, FERNANDO belt; Red Bull: bulls, Infiniti, Total), sleeves and legs, signage, livery, street and Otherworld surfaces |
+| `src/shade.py` | spotlight with a PCF shadow map, light bouncing off the floor, distance fog and sky light, ray-marched volumetric beam (half resolution), dust, falling ash and embers, bloom |
 | `src/vhs.py` | YIQ chroma bleed and delay, luma ringing, line jitter, head-switching noise, dropouts, snow, camcorder date overlay |
 | `src/scenes.py` | the two shots: animation, camera moves, lamp flicker |
 | `src/audio.py` | VHS treatment of the voice (pitch, wow/flutter, band-limit, crunch, dropouts, reverb), plus lamp clunks, hum, the switch click, the air-raid siren, radio static, wind, traffic-light relay ticks, distant metal clangs, a drone and tape hiss |
 | `src/tts.py` | fetches the two voice lines from ElevenLabs (`eleven_v3`, voice "Jessica") into `assets/` |
 | `src/timeline.py` | shared timings |
 
-The image is rendered at 320×240, degraded at 640×480 and scaled to 960×720.
+The image is rendered at 640×480, degraded like a VHS tape and scaled to 960×720.
+
+## Faces
+- `assets/faces/alonso.webp`: the photo of Alonso supplied for this project (not committed;
+  put it there to rebuild).
+- `assets/faces/vettel.jpg`: [Sebastian Vettel - Press conference, 2010 German Grand Prix
+  (cropped)](https://commons.wikimedia.org/wiki/File:Sebastian_Vettel_-_Press_conference,_2010_German_Grand_Prix_(cropped).jpeg),
+  original by LG전자, derivative by Danyele, CC BY 2.0.
 
 ## Rebuild
 Needs Python 3 with numpy and Pillow, and ffmpeg.

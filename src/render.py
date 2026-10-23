@@ -12,7 +12,7 @@ import timeline as TL
 import textures
 from engine import rasterize, resolve
 from scenes import Stage
-from shade import shade, volume, dust, ash, bloom, tonemap, ps1_dither
+from shade import shade, volume, dust, ash, bloom, tonemap
 from vhs import degrade, OW, OH
 
 _STAGE = None
@@ -32,7 +32,7 @@ def clock(t):
 
 def render_frame(i):
     t = i / TL.FPS
-    frame = np.zeros((240, 320, 3))
+    frame = np.zeros((OH, OW, 3))
     if TL.ESTABLISH <= t < TL.CUT:
         shot = _STAGE.shot_alonso(t)
     elif TL.CUT <= t < TL.TAPE_END:
@@ -43,15 +43,19 @@ def render_frame(i):
         cam, spot, env = shot['cam'], shot['spot'], shot['env']
         if spot.I > 0:
             spot.build_shadow(shot['occ'], _TEX)
-        vis = rasterize(shot['scene'], cam, textures=_TEX)
+        vis = rasterize(shot['scene'], cam, snap=False, textures=_TEX)
         G = resolve(cam, vis, _TEX)
         lin = shade(G, cam, spot, env)
-        lin += volume(cam, spot, G['depth'], t, density=0.009, seed=i)
+        # the light shaft is soft: march it at half resolution
+        half = cam.scaled(0.5)
+        d2 = G['depth'].reshape(OH // 2, 2, OW // 2, 2).min((1, 3))
+        vol = volume(half, spot, d2, t, density=0.009, seed=i)
+        lin += vol.repeat(2, 0).repeat(2, 1)
         dust(lin, cam, spot, G['depth'], t, box=shot['dust'])
         if env.amb.max() > 0:
             ash(lin, cam, spot, env, G['depth'], t, ember=shot['ember'])
-        lin = bloom(lin, thresh=1.6, radius=3, strength=0.4)
-        frame = ps1_dither(tonemap(lin))
+        lin = bloom(lin, thresh=1.6, radius=6, strength=0.4)
+        frame = tonemap(lin)
 
     # tape events
     glitch, snow_amt = 0.0, 0.0

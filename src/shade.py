@@ -10,7 +10,7 @@ def smoothstep(a, b, x):
 
 class Spot:
     def __init__(self, pos, target, inner_deg, outer_deg, intensity, color=(1.0, 0.92, 0.78),
-                 shadow_res=480):
+                 shadow_res=1024):
         self.pos = np.asarray(pos, float)
         self.target = np.asarray(target, float)
         self.dir = norm(np.asarray(target, float) - self.pos)
@@ -25,13 +25,16 @@ class Spot:
         vis = rasterize(mesh, self.cam, near=0.1, snap=False, cull=False, textures=textures)
         self.depth = np.where(vis[0] >= 0, 1.0 / np.maximum(vis[3], 1e-9), 1e9)
 
-    def shadow(self, Q, bias=0.06):
+    def shadow(self, Q, bias=0.03):
         if self.depth is None or self.I <= 0:
             return np.ones(len(Q))
         sx, sy, z = self.cam.project(Q)
         n = self.cam.W
-        ix = np.clip(sx.astype(int), 0, n - 1); iy = np.clip(sy.astype(int), 0, n - 1)
-        return (z <= self.depth[iy, ix] + bias).astype(float)
+        lit = 0.0
+        for ox, oy in ((-0.5, -0.5), (0.5, -0.5), (-0.5, 0.5), (0.5, 0.5)):    # 2x2 PCF
+            ix = np.clip((sx + ox).astype(int), 0, n - 1); iy = np.clip((sy + oy).astype(int), 0, n - 1)
+            lit = lit + (z <= self.depth[iy, ix] + bias)
+        return lit / 4.0
 
     def radiance(self, Q):
         """Incoming light (scalar) at points Q ignoring shadow and normal."""
@@ -157,7 +160,7 @@ def ash(img, cam, spot, env, depth, t, n=900, seed=11, ember=False):
                       0.25 * np.sin(t * 0.5 + ph * 1.7)], 1)
     P = centre - size / 2 + (p0 + drift - (centre - size / 2)) % size
     sx, sy, z = cam.project(P)
-    ok = (z > 0.3) & (sx >= 0) & (sx < cam.W - 3) & (sy >= 0) & (sy < cam.H - 3)
+    ok = (z > 0.3) & (sx >= 0) & (sx < cam.W - 5) & (sy >= 0) & (sy < cam.H - 5)
     P, sx, sy, z = P[ok], sx[ok], sy[ok], z[ok]
     ix, iy = sx.astype(int), sy.astype(int)
     vis = z < depth[iy, ix]
@@ -170,8 +173,8 @@ def ash(img, cam, spot, env, depth, t, n=900, seed=11, ember=False):
         col = 0.55 * (env.amb[None] * 1.6 + 0.6 * r[:, None] * spot.color)
     f = env.fog_factor(z)[:, None]
     col = col * f + env.fog * (1 - f)
-    px = np.clip(0.035 * cam.fpx / z, 1, 3).astype(int)
-    for s_ in (1, 2, 3):
+    px = np.clip(0.035 * cam.fpx / z, 1, 5).astype(int)
+    for s_ in (1, 2, 3, 4, 5):
         sel = px == s_
         for dy in range(s_):
             for dx in range(s_):
